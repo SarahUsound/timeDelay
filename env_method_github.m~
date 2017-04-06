@@ -1,0 +1,230 @@
+% USER INPUT %
+data_directory = 'data4/'; % enter the path to directory containing data here
+% files in data directory should have the structure below:%
+%  ###mmTrace yyyy-mm-dd.csv  --> trace number, date
+%  example: 80mmTrace 2017-03-06.csv
+
+sampleRate = 50000; % samples / second
+sampleDuration = 0.9; % seconds
+burstPeriod = 0.3 % seconds
+delim = round(burstPeriod * sampleRate);
+
+% input visual measurements
+eye_dist = [80 80 80 140 140 140 20 20 20 100 100 100];
+eye_delay = [0.000545 0.000614 0.000614 0.000981 0.001008 0.000981 0.000396 0.00038 0.00033 0.001024 0.000917 0.000893];
+
+
+dat = dir(data_directory);
+direc = data_directory;
+
+% these arrays are not preallocated... 
+% should be smarter once set data format
+delays = zeros(1,5);
+distances = zeros(1,5);
+
+% variables for iteration over whole directory, 
+% arranging matrix of plots
+p = 1; % 
+nf = length(dat) - 3; % number of files to examine (3 are extra from OS)
+
+for i = 4:length(dat)
+filename = dat(i).name;
+x = strcat(direc, filename);
+dist = x(7:length(x)-22); % strip info about setup from file name
+dist = str2num(dist);
+display(x);
+
+samples = load(x);
+
+
+
+% read raw data from CSV file %
+rows = round(sampleDuration * sampleRate);
+
+receiver = csvread(filename, 4, 2, [4,2,rows,2]);
+emitter = csvread(filename, 4, 3, [4,3,rows,3]);
+time = csvread(filename, 4, 1, [4,1,rows,1]);
+
+% elliminate some DC offset from data %
+rDCoffset = mean(receiver);
+eDCoffset = mean(emitter);
+
+receiver = receiver - rDCoffset;
+emitter = emitter - eDCoffset;
+
+% get data for delay ever pulse
+split = 4; % arbitrary... didn't want to start on first row
+stop = split + delim;
+while stop < rows
+    
+    recpart = csvread(filename, split, 2, [split,2,stop,2]);
+    empart = csvread(filename, split, 3, [split,3,stop,3]);
+    tipart = csvread(filename, split, 1, [split,1,stop,1]);
+
+    %median filter%
+    empart = medfilt1(empart, 5);
+    recpart = medfilt1(recpart, 5);
+    
+    %eliminate DC offsets%
+    empart = empart - mean(empart);
+    recpart = recpart - mean(recpart);
+
+    %extract envelopes of signals%
+    rec_env = hilbert(recpart);
+    rec_env = abs(rec_env);
+    em_env = hilbert(empart);
+    em_env = abs(em_env);
+    
+     
+    %find state level references %
+    high_em = max(em_env); 
+    high_rec = max(rec_env);
+
+    h(1) = subplot(nf,2,p); % designate a spot in final figure for this plot
+    yyaxis left
+    [r,lt,ut,ll,ul] = risetime(em_env, 'StateLevels', [0,high_em], 'Tolerance', 1);
+    plot(em_env, '-') % plot envelope of signal
+    hold on
+    plot(empart, '-') % plot full signal
+    if ~isempty(lt) % ensure that start time was identified by risetime 
+        plot(lt,ll,'o') % plot start time with a circle
+    else
+        set(gca,'Color',[0.8 0.8 0.8]); % if start time could not be identified, color plot grey
+    end
+    hold off
+
+    xl = strcat(num2str(dist), 'mm in air, 20us sample period'); 
+    xlabel(xl)
+    ylabel('emitter (V)')
+
+    % repeat the above with receiver data %
+    yyaxis right
+    [rr,rlt,rut,rll,rul] = risetime(rec_env, 'StateLevels',[0,high_rec], 'Tolerance', 2);
+    plot(rec_env)
+    hold on
+    plot(recpart);
+    if ~isempty(rlt)
+        plot(rlt,rll,'o')
+    else
+        set(gca,'Color',[0.8 0.8 0.8]);
+    end
+    hold off
+    ylabel('receiver (V)')
+
+
+
+
+
+hold on;
+
+% %t21 = finddelay(filtem,filtrec,50);
+% [acor, lag] = xcorr(recpart, empart);
+% indx = find(abs(acor) == max(abs(acor)));
+
+    % calculate delay between emitter/receiver using start times %
+    if ~isempty(rlt) && ~isempty(lt)
+        delay = abs(rlt(1) - lt(1));
+        t23 = delay*.00002;
+    else
+        delay = -1;
+    end
+    
+    % remove number of rows corresponding to delay to "shift" receiver 
+    remove_indices = [1:delay];
+    shifted_rec = recpart;
+    shifted_rec(remove_indices)=[];
+
+    % plot shifted data %
+    subplot(nf,2,p+1);
+    yyaxis left
+    plot(empart)
+    xl = strcat(num2str(dist), 'mm in air, 20us sample period');
+    xlabel(xl)
+    ylabel('shifted emitter (V)')
+
+    yyaxis right 
+    plot(shifted_rec)
+    ylabel('shifted receiver (V)')
+
+
+    % find time multiplier to convert samples delay to seconds delay %
+    % should = 1/sampleRate %
+    j = 2;
+    incr = 0;
+    tavg = 0;
+    while j < length(tipart)
+        incr = tipart(j) - tipart(j-1);
+        tavg = (tavg)*(j-2) + incr;
+        tavg = tavg/(j-1);
+        j = j + 1;
+    end
+
+  
+    if delay ~= -1
+        delays = [delays, t23]; 
+        distances = [distances, dist];
+    end
+    
+    % increment to read next section of same file (next pulse) %   
+    split = stop;
+    stop = split + delim;
+end
+
+% increment to read next file in directory %
+p = p + 2;
+end
+
+
+% render/ finish editing plots of pulse data %
+figure;
+
+
+% prepare scatter plots of delay time data %
+
+% remove zeros used to initialize arrays % 
+ind = [1:5];
+delays(ind) = [];
+distances(ind) = [];
+
+scatter(distances, delays, 'DisplayName', 'Experimental');
+hold on
+b1 = (distances.') \ (delays.');
+ycalc = distances .* b1;
+expRsqm = 1 - sum((delays - ycalc).^2)/sum((delays - mean(delays)).^2);
+dis = sprintf('Experimental LinReg, R^2=%f', expRsqm);
+plot(distances, ycalc, 'DisplayName', dis)
+
+
+% create scatter plots %
+% calculate linear regression %
+% plot linear regression %
+
+theo = distances./340000;
+scatter(distances, theo, 'DisplayName', 'Theoretical');
+b1 = (distances.') \ (theo.');
+ycalc = distances .* b1;
+theRsqm = 1 - sum((theo - ycalc).^2)/sum((theo - mean(theo)).^2);
+dis = sprintf('Theoretical LinReg, R^2=%f', theRsqm);
+plot(distances, ycalc, 'DisplayName', dis)
+
+scatter(eye_dist, eye_delay, 'DisplayName', 'Visual Meas');
+b1 = (eye_dist.') \ (eye_delay.');
+ycalc = eye_dist .* b1;
+eyeRsqm = 1 - sum((eye_delay - ycalc).^2)/sum((eye_delay - mean(eye_delay)).^2);
+dis = sprintf('Visual LinReg, R^2=%f', eyeRsqm);
+plot(eye_dist, ycalc, 'DisplayName', dis)
+
+
+legend('-DynamicLegend');
+xlabel('Distances (mm)');
+ylabel('Time (s)');
+title('Time (s) vs Separation (mm)');
+
+
+% Debugging %
+% display(delays)
+% display(theo)
+% display(eye_delay)
+
+
+    
